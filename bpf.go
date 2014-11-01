@@ -11,6 +11,12 @@ import (
 	"unsafe"
 )
 
+// Bpf represents a tap into a network interface
+type Bpf struct {
+	path string
+	fd   int
+}
+
 const (
 	SizeofMacAddress = 0x06 // 6 Octets
 	SizeofEtherType  = 0x02 // 2 Octets
@@ -256,7 +262,7 @@ func SetSeeSent(fd, f int) error {
 	return nil
 }
 
-func OpenBpfFd() (*os.File, error) {
+func OpenBpf() (*os.File, error) {
 	files, err := ioutil.ReadDir("/dev")
 	if err != nil {
 		log.Fatal(err)
@@ -271,4 +277,13 @@ func OpenBpfFd() (*os.File, error) {
 		}
 	}
 	return nil, syscall.ENOENT
+}
+
+func (b *Bpf) SetOption(options ...func(b *Bpf) error) error {
+	for _, opt := range options {
+		if err := opt(b); err != nil {
+			return err
+		}
+	}
+	return nil
 }
