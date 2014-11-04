@@ -13,8 +13,9 @@ import (
 
 // Bpf represents a tap into a network interface
 type Bpf struct {
-	path string
-	fd   int
+	filepath string
+	fd       int
+	ifname   string
 }
 
 const (
@@ -24,7 +25,7 @@ const (
 
 type ivalue struct {
 	name  [syscall.IFNAMSIZ]byte
-	value int16
+	value int64
 }
 
 // Returns the required buffer length for reads on bpf files and any errors encountered
@@ -286,4 +287,12 @@ func (b *Bpf) SetOption(options ...func(b *Bpf) error) error {
 		}
 	}
 	return nil
+}
+
+func OpenInterface(dev string, options func(*Bpf) error) (*Bpf, error) {
+	fd, err := OpenBpf()
+	if err != nil {
+		return nil, err
+	}
+
 }
