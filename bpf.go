@@ -13,8 +13,8 @@ import (
 
 // Bpf represents a tap into a network interface
 type Listener struct {
-	device *os.File
-	iface  string
+	Device *os.File
+	IFACE  string
 }
 
 const (
