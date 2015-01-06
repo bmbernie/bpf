@@ -1,4 +1,4 @@
-// Package bpf provides primitives for interfacing with the Berkeley Packet Filter.
+// Package bpf provides primitives for interfacing with the Berkeley Packet FilterDevice.
 package bpf
 
 import (
@@ -12,9 +12,8 @@ import (
 )
 
 // Bpf represents a tap into a network interface
-type Listener struct {
-	Device *os.File
-	IFACE  string
+type FilterDevice struct {
+	device *os.File
 }
 
 const (
@@ -24,54 +23,76 @@ const (
 
 // this is hacky, should probably use cgo to get this from the OS
 type ivalue struct {
-	name  [syscall.IFNAMSIZ]byte
-	value int64
+	name  [syscall.IFNAMSIZ + 2]byte
+	value int
 }
 
-// NewListener returns a new Listener with default options wich are overridden
+// NewFilterDevice returns a new FilterDevice with default options wich are overridden
 // by the optionally provided opts
-func NewListener(opts ...func(*Listener)) *Listener {
-	l := &Listener{}
+func NewFilterDevice(opts ...func(*FilterDevice) error) *FilterDevice {
+	filter := &FilterDevice{}
 
 	for _, opt := range opts {
-		opt(l)
+		err := opt(filter)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
-	return l
+	return filter
 }
 
 // Returns a functional option which sets the iterface that the bpf device
 // is attached to.
-func Interface(ifname string) func(*Listener) {
-	return func(l *Listener) {
-		l.iface = ifname
+func Interface(ifname string) func(*FilterDevice) error {
+	return func(l *FilterDevice) error {
+		err := l.SetInterface(int(l.device.Fd()), ifname)
+		if err != nil {
+			return err
+		}
+		return nil
 	}
 }
 
 // Returns the required
-func Device() func(*Listener) {
-	return func(l *Listener) {
+func Open() func(*FilterDevice) error {
+	return func(l *FilterDevice) error {
 		// Opens a bpf device
 		dir, err := ioutil.ReadDir("/dev")
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 
 		for _, file := range dir {
 			if strings.Contains(file.Name(), "bpf") {
 				f, err := os.OpenFile(fmt.Sprintf("/dev/%s", file.Name()), os.O_RDWR, 0666)
-				if err == nil {
-					l.device = f
-					break
+				if err != nil {
+					continue
 				}
+				l.device = f
+				break
 			}
 		}
+		return nil
 	}
+}
+
+// Close the open filter and perhaps other cleanup stuff
+func (filterdev *FilterDevice) Close() {
+	err := filterdev.device.Close()
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+// Returns the file descriptor associated with the open bpf device
+func (filterdev *FilterDevice) Fd() uintptr {
+	return filterdev.device.Fd()
 }
 
 // Returns the required buffer length for reads on the bpf device and errors
 // encountered while accessing the BIOCBLEN IOCTL
-func (l *Listener) BufLen() (int, error) {
+func (l *FilterDevice) BufLen() (int, error) {
 	var buflen int
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCGBLEN, uintptr(unsafe.Pointer(&buflen)))
 	if err != 0 {
@@ -85,7 +106,7 @@ func (l *Listener) BufLen() (int, error) {
 // buffer size cannot be accomomdated, the closest allowable size will be set
 // and returned in the argument.  A read call will result in EINVAL if it is
 // passd a buffer that is not this size
-func (l *Listener) SetBufLen(buflen int) (int, error) {
+func (l *FilterDevice) SetBufLen(buflen int) (int, error) {
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCSBLEN, uintptr(unsafe.Pointer(&buflen)))
 	if err != 0 {
 		return 0, syscall.Errno(err)
@@ -95,7 +116,7 @@ func (l *Listener) SetBufLen(buflen int) (int, error) {
 
 // Returns the type of the data link layer underlying the attached interface.
 // EINVAL is returned if no interface has been specified.
-func (l *Listener) Datalink() (int, error) {
+func (l *FilterDevice) Datalink() (int, error) {
 	var t int
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCGDLT, uintptr(unsafe.Pointer(&t)))
 	if err != 0 {
@@ -107,7 +128,7 @@ func (l *Listener) Datalink() (int, error) {
 // Changes the type of the data link layer underlying the attached interface.
 // EINVAL is returned if no interface has been specified or the specified type
 // is not available for the interface
-func (l *Listener) SetDatalink(t int) (int, error) {
+func (l *FilterDevice) SetDatalink(t int) (int, error) {
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCSDLT, uintptr(unsafe.Pointer(&t)))
 	if err != 0 {
 		return 0, syscall.Errno(err)
@@ -120,7 +141,7 @@ func (l *Listener) SetDatalink(t int) (int, error) {
 // listening on a given interface, a listener that opened its interface
 // non-promiscuously may receive packetspromiscuously.  This problem can be
 // remedied with an appropriate filter.
-func (l *Listener) SetPromisc(m int) error {
+func (l *FilterDevice) SetPromisc(m int) error {
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCPROMISC, uintptr(unsafe.Pointer(&m)))
 	if err != 0 {
 		return syscall.Errno(err)
@@ -130,7 +151,7 @@ func (l *Listener) SetPromisc(m int) error {
 
 // Flushes the buffer of incoming packets, and resets the statistics that are
 // returned by BIOCGSTATS.
-func (l *Listener) Flush() error {
+func (l *FilterDevice) Flush() error {
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCFLUSH, 0)
 	if err != 0 {
 		return syscall.Errno(err)
@@ -141,7 +162,7 @@ func (l *Listener) Flush() error {
 // Returns the name of the hardware interface that the file is listening on. The
 // name is returned in the ifr_name field of the ifreq structure.  All other
 // fields are undefined.
-func (l *Listener) Interface(fd int, name string) (string, error) {
+func (l *FilterDevice) Interface(name string) (string, error) {
 	var iv ivalue
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCGETIF, uintptr(unsafe.Pointer(&iv)))
 	if err != 0 {
@@ -154,7 +175,7 @@ func (l *Listener) Interface(fd int, name string) (string, error) {
 // performed before any packets can be read.  The device is indicated by name
 // using the name field of the ivalue struct.  Additionally, performs the
 // actions of BIOCFLUSH
-func (l *Listener) SetInterface(fd int, name string) error {
+func (l *FilterDevice) SetInterface(fd int, name string) error {
 	var iv ivalue
 	copy(iv.name[:], []byte(name))
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCSETIF, uintptr(unsafe.Pointer(&iv)))
@@ -167,7 +188,7 @@ func (l *Listener) SetInterface(fd int, name string) error {
 // Get the read timeout parameter.  The argument specifies the length
 // of time to wait before timing out on a read request.  This parameter is
 // initializedized to zero by os.Open(2), indicating no timeout.
-func (l *Listener) GetTimeout() (*syscall.Timeval, error) {
+func (l *FilterDevice) GetTimeout() (*syscall.Timeval, error) {
 	var tv syscall.Timeval
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCGRTIMEOUT, uintptr(unsafe.Pointer(&tv)))
 	if err != 0 {
@@ -179,7 +200,7 @@ func (l *Listener) GetTimeout() (*syscall.Timeval, error) {
 // Sets the read timeout parameter.  The argument specifies the length
 // of time to wait before timing out on a read request.  This parameter is
 // initializedized to zero by os.Open(2), indicating no timeout.
-func (l *Listener) SetTimeout(fd int, tv *syscall.Timeval) error {
+func (l *FilterDevice) SetTimeout(fd int, tv *syscall.Timeval) error {
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCSRTIMEOUT, uintptr(unsafe.Pointer(tv)))
 	if err != 0 {
 		return syscall.Errno(err)
@@ -193,7 +214,7 @@ func (l *Listener) SetTimeout(fd int, tv *syscall.Timeval) error {
 // number of packets which were accepted by the filter but dropped by the kernel
 // because of buffer overflows (i.e., the application's reads aren't keeping up)
 // with the packet traffic
-func (l *Listener) GetStats() (*syscall.BpfStat, error) {
+func (l *FilterDevice) GetStats() (*syscall.BpfStat, error) {
 	var s syscall.BpfStat
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCGSTATS, uintptr(unsafe.Pointer(&s)))
 	if err != 0 {
@@ -208,7 +229,7 @@ func (l *Listener) GetStats() (*syscall.BpfStat, error) {
 // buffer becomes full or a timeout occurs.  This is useful for programs like
 // rarpd(8) which must respond to messages in real time.  The default for a new
 // file is off.
-func (l *Listener) SetImmediate(m int) error {
+func (l *FilterDevice) SetImmediate(m int) error {
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCIMMEDIATE, uintptr(unsafe.Pointer(&m)))
 	if err != 0 {
 		return syscall.Errno(err)
@@ -223,7 +244,7 @@ func (l *Listener) SetImmediate(m int) error {
 // the actions of BIOCFLUSH are performed.  The only difference between BIOCSETF
 // and BIOCSETFNR is BIOCSETF performs the actions of BIOCFLUSH while BIOCSETFNR
 // does not.
-func (l *Listener) SetBpf(i []syscall.BpfInsn) error {
+func (l *FilterDevice) SetBpf(i []syscall.BpfInsn) error {
 	var p syscall.BpfProgram
 	p.Len = uint32(len(i))
 	p.Insns = (*syscall.BpfInsn)(unsafe.Pointer(&i[0]))
@@ -239,7 +260,7 @@ func (l *Listener) SetBpf(i []syscall.BpfInsn) error {
 // check that the current version is compatible with the running kernel.
 // Version numbers are compatible if the major numbers match and the application
 // minor is less than or equal to the kernel minor.
-func (l *Listener) GetVersion() (*syscall.BpfVersion, error) {
+func (l *FilterDevice) GetVersion() (*syscall.BpfVersion, error) {
 	var v syscall.BpfVersion
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCVERSION, uintptr(unsafe.Pointer(&v)))
 	if err != 0 {
@@ -255,7 +276,7 @@ func (l *Listener) GetVersion() (*syscall.BpfVersion, error) {
 // source address should be filled in automatically by the interface output
 // routine.  Set to one if the link level source address will be written, as
 // provided, to the wire.  This flag is initialized to zero by default.
-func (l *Listener) GetHeaderComplete() (int, error) {
+func (l *FilterDevice) GetHeaderComplete() (int, error) {
 	var f int
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCGHDRCMPLT, uintptr(unsafe.Pointer(&f)))
 	if err != 0 {
@@ -268,7 +289,7 @@ func (l *Listener) GetHeaderComplete() (int, error) {
 // source address should be filled in automatically by the interface output
 // routine.  Set to one if the link level source address will be written, as
 // provided, to the wire.  This flag is initialized to zero by default.
-func (l *Listener) SetHeaderComplete(f int) error {
+func (l *FilterDevice) SetHeaderComplete(f int) error {
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCSHDRCMPLT, uintptr(unsafe.Pointer(&f)))
 	if err != 0 {
 		return syscall.Errno(err)
@@ -280,7 +301,7 @@ func (l *Listener) SetHeaderComplete(f int) error {
 // should be returned by BPF.  Set to zero to see only incoming packets on the
 // interface.  Set to one to see packets originating locally and remotely on the
 // interface.  This flag is initialized to one by default.
-func (l *Listener) SeeSent() (int, error) {
+func (l *FilterDevice) SeeSent() (int, error) {
 	var f int
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCGSEESENT, uintptr(unsafe.Pointer(&f)))
 	if err != 0 {
@@ -293,7 +314,7 @@ func (l *Listener) SeeSent() (int, error) {
 // should be returned by BPF.  Set to zero to see only incoming packets on the
 // interface.  Set to one to see packets originating locally and remotely on the
 // interface.  This flag is initialized to one by default.
-func (l *Listener) SetSeeSent(f int) error {
+func (l *FilterDevice) SetSeeSent(f int) error {
 	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCSSEESENT, uintptr(unsafe.Pointer(&f)))
 	if err != 0 {
 		return syscall.Errno(err)
