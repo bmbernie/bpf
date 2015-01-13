@@ -62,8 +62,8 @@ func NewNetworkTap(opts ...func(*NetworkTap) error) (*NetworkTap, error) {
 // Returns a functional option which sets the iterface that the bpf device
 // is attached to.
 func Interface(ifname string) func(*NetworkTap) error {
-	return func(l *NetworkTap) error {
-		err := l.SetInterface(int(l.device.Fd()), ifname)
+	return func(filterdev *NetworkTap) error {
+		err := filterdev.SetInterface(int(filterdev.device.Fd()), ifname)
 		if err != nil {
 			return err
 		}
@@ -71,9 +71,23 @@ func Interface(ifname string) func(*NetworkTap) error {
 	}
 }
 
-func PromiscuousMode() func(*NetworkTap) error {
+// Returns a functional option which sets the network interface into promiscuous
+// mode
+func Promiscuous() func(*NetworkTap) error {
 	return func(t *NetworkTap) error {
 		err := t.SetPromisc(int(t.Fd()))
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+}
+
+// Returns a functional option which configures reads on the network tap to
+// return immediately upon packet reception
+func Immediate() func(*NetworkTap) error {
+	return func(t *NetworkTap) error {
+		err := t.SetImmediate(1)
 		if err != nil {
 			return err
 		}
@@ -96,9 +110,9 @@ func (filterdev *NetworkTap) Fd() uintptr {
 
 // Returns the required buffer length for reads on the bpf device and errors
 // encountered while accessing the BIOCBLEN IOCTL
-func (l *NetworkTap) BufLen() (int, error) {
+func (filterdev *NetworkTap) BufLen() (int, error) {
 	var buflen int
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCGBLEN, uintptr(unsafe.Pointer(&buflen)))
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCGBLEN, uintptr(unsafe.Pointer(&buflen)))
 	if err != 0 {
 		return 0, syscall.Errno(err)
 	}
@@ -110,8 +124,8 @@ func (l *NetworkTap) BufLen() (int, error) {
 // buffer size cannot be accomomdated, the closest allowable size will be set
 // and returned in the argument.  A read call will result in EINVAL if it is
 // passd a buffer that is not this size
-func (l *NetworkTap) SetBufLen(buflen int) (int, error) {
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCSBLEN, uintptr(unsafe.Pointer(&buflen)))
+func (filterdev *NetworkTap) SetBufLen(buflen int) (int, error) {
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCSBLEN, uintptr(unsafe.Pointer(&buflen)))
 	if err != 0 {
 		return 0, syscall.Errno(err)
 	}
@@ -120,9 +134,9 @@ func (l *NetworkTap) SetBufLen(buflen int) (int, error) {
 
 // Returns the type of the data link layer underlying the attached interface.
 // EINVAL is returned if no interface has been specified.
-func (l *NetworkTap) Datalink() (int, error) {
+func (filterdev *NetworkTap) Datalink() (int, error) {
 	var t int
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCGDLT, uintptr(unsafe.Pointer(&t)))
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCGDLT, uintptr(unsafe.Pointer(&t)))
 	if err != 0 {
 		return 0, syscall.Errno(err)
 	}
@@ -132,8 +146,8 @@ func (l *NetworkTap) Datalink() (int, error) {
 // Changes the type of the data link layer underlying the attached interface.
 // EINVAL is returned if no interface has been specified or the specified type
 // is not available for the interface
-func (l *NetworkTap) SetDatalink(t int) (int, error) {
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCSDLT, uintptr(unsafe.Pointer(&t)))
+func (filterdev *NetworkTap) SetDatalink(t int) (int, error) {
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCSDLT, uintptr(unsafe.Pointer(&t)))
 	if err != 0 {
 		return 0, syscall.Errno(err)
 	}
@@ -145,8 +159,8 @@ func (l *NetworkTap) SetDatalink(t int) (int, error) {
 // listening on a given interface, a listener that opened its interface
 // non-promiscuously may receive packetspromiscuously.  This problem can be
 // remedied with an appropriate filter.
-func (l *NetworkTap) SetPromisc(m int) error {
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCPROMISC, uintptr(unsafe.Pointer(&m)))
+func (filterdev *NetworkTap) SetPromisc(m int) error {
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCPROMISC, uintptr(unsafe.Pointer(&m)))
 	if err != 0 {
 		return syscall.Errno(err)
 	}
@@ -155,8 +169,8 @@ func (l *NetworkTap) SetPromisc(m int) error {
 
 // Flushes the buffer of incoming packets, and resets the statistics that are
 // returned by BIOCGSTATS.
-func (l *NetworkTap) Flush() error {
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCFLUSH, 0)
+func (filterdev *NetworkTap) Flush() error {
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCFLUSH, 0)
 	if err != 0 {
 		return syscall.Errno(err)
 	}
@@ -166,9 +180,9 @@ func (l *NetworkTap) Flush() error {
 // Returns the name of the hardware interface that the file is listening on. The
 // name is returned in the ifr_name field of the ifreq structure.  All other
 // fields are undefined.
-func (l *NetworkTap) Interface(name string) (string, error) {
+func (filterdev *NetworkTap) Interface(name string) (string, error) {
 	var iv ivalue
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCGETIF, uintptr(unsafe.Pointer(&iv)))
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCGETIF, uintptr(unsafe.Pointer(&iv)))
 	if err != 0 {
 		return "", syscall.Errno(err)
 	}
@@ -179,10 +193,10 @@ func (l *NetworkTap) Interface(name string) (string, error) {
 // performed before any packets can be read.  The device is indicated by name
 // using the name field of the ivalue struct.  Additionally, performs the
 // actions of BIOCFLUSH
-func (l *NetworkTap) SetInterface(fd int, name string) error {
+func (filterdev *NetworkTap) SetInterface(fd int, name string) error {
 	var iv ivalue
 	copy(iv.name[:], []byte(name))
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCSETIF, uintptr(unsafe.Pointer(&iv)))
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCSETIF, uintptr(unsafe.Pointer(&iv)))
 	if err != 0 {
 		return syscall.Errno(err)
 	}
@@ -192,9 +206,9 @@ func (l *NetworkTap) SetInterface(fd int, name string) error {
 // Get the read timeout parameter.  The argument specifies the length
 // of time to wait before timing out on a read request.  This parameter is
 // initializedized to zero by os.Open(2), indicating no timeout.
-func (l *NetworkTap) Timeout() (*syscall.Timeval, error) {
+func (filterdev *NetworkTap) Timeout() (*syscall.Timeval, error) {
 	var tv syscall.Timeval
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCGRTIMEOUT, uintptr(unsafe.Pointer(&tv)))
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCGRTIMEOUT, uintptr(unsafe.Pointer(&tv)))
 	if err != 0 {
 		return nil, syscall.Errno(err)
 	}
@@ -204,8 +218,8 @@ func (l *NetworkTap) Timeout() (*syscall.Timeval, error) {
 // Sets the read timeout parameter.  The argument specifies the length
 // of time to wait before timing out on a read request.  This parameter is
 // initializedized to zero by os.Open(2), indicating no timeout.
-func (l *NetworkTap) SetTimeout(fd int, tv *syscall.Timeval) error {
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCSRTIMEOUT, uintptr(unsafe.Pointer(tv)))
+func (filterdev *NetworkTap) SetTimeout(fd int, tv *syscall.Timeval) error {
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCSRTIMEOUT, uintptr(unsafe.Pointer(tv)))
 	if err != 0 {
 		return syscall.Errno(err)
 	}
@@ -218,9 +232,9 @@ func (l *NetworkTap) SetTimeout(fd int, tv *syscall.Timeval) error {
 // number of packets which were accepted by the filter but dropped by the kernel
 // because of buffer overflows (i.e., the application's reads aren't keeping up)
 // with the packet traffic
-func (l *NetworkTap) Stats() (*syscall.BpfStat, error) {
+func (filterdev *NetworkTap) Stats() (*syscall.BpfStat, error) {
 	var s syscall.BpfStat
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCGSTATS, uintptr(unsafe.Pointer(&s)))
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCGSTATS, uintptr(unsafe.Pointer(&s)))
 	if err != 0 {
 		return nil, syscall.Errno(err)
 	}
@@ -233,8 +247,8 @@ func (l *NetworkTap) Stats() (*syscall.BpfStat, error) {
 // buffer becomes full or a timeout occurs.  This is useful for programs like
 // rarpd(8) which must respond to messages in real time.  The default for a new
 // file is off.
-func (l *NetworkTap) SetImmediate(m int) error {
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCIMMEDIATE, uintptr(unsafe.Pointer(&m)))
+func (filterdev *NetworkTap) SetImmediate(m int) error {
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCIMMEDIATE, uintptr(unsafe.Pointer(&m)))
 	if err != 0 {
 		return syscall.Errno(err)
 	}
@@ -248,15 +262,27 @@ func (l *NetworkTap) SetImmediate(m int) error {
 // the actions of BIOCFLUSH are performed.  The only difference between BIOCSETF
 // and BIOCSETFNR is BIOCSETF performs the actions of BIOCFLUSH while BIOCSETFNR
 // does not.
-func (l *NetworkTap) SetBpf(i []syscall.BpfInsn) error {
+func (filterdev *NetworkTap) SetFilter(i []syscall.BpfInsn) error {
 	var p syscall.BpfProgram
 	p.Len = uint32(len(i))
 	p.Insns = (*syscall.BpfInsn)(unsafe.Pointer(&i[0]))
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCSETF, uintptr(unsafe.Pointer(&p)))
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCSETF, uintptr(unsafe.Pointer(&p)))
 	if err != 0 {
 		return syscall.Errno(err)
 	}
 	return nil
+}
+
+// Returns a functional option which sets the bpf filter program on the network
+// tap
+func Program(p []syscall.BpfInsn) func(*NetworkTap) error {
+	return func(filterdev *NetworkTap) error {
+		err := filterdev.SetFilter(p)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
 }
 
 // Returns the major and minor version numbers of the filter language currently
@@ -264,9 +290,9 @@ func (l *NetworkTap) SetBpf(i []syscall.BpfInsn) error {
 // check that the current version is compatible with the running kernel.
 // Version numbers are compatible if the major numbers match and the application
 // minor is less than or equal to the kernel minor.
-func (l *NetworkTap) Version() (*syscall.BpfVersion, error) {
+func (filterdev *NetworkTap) Version() (*syscall.BpfVersion, error) {
 	var v syscall.BpfVersion
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCVERSION, uintptr(unsafe.Pointer(&v)))
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCVERSION, uintptr(unsafe.Pointer(&v)))
 	if err != 0 {
 		return nil, syscall.Errno(err)
 	}
@@ -280,9 +306,9 @@ func (l *NetworkTap) Version() (*syscall.BpfVersion, error) {
 // source address should be filled in automatically by the interface output
 // routine.  Set to one if the link level source address will be written, as
 // provided, to the wire.  This flag is initialized to zero by default.
-func (l *NetworkTap) HeaderComplete() (int, error) {
+func (filterdev *NetworkTap) HeaderComplete() (int, error) {
 	var f int
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCGHDRCMPLT, uintptr(unsafe.Pointer(&f)))
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCGHDRCMPLT, uintptr(unsafe.Pointer(&f)))
 	if err != 0 {
 		return 0, syscall.Errno(err)
 	}
@@ -293,8 +319,8 @@ func (l *NetworkTap) HeaderComplete() (int, error) {
 // source address should be filled in automatically by the interface output
 // routine.  Set to one if the link level source address will be written, as
 // provided, to the wire.  This flag is initialized to zero by default.
-func (l *NetworkTap) SetHeaderComplete(f int) error {
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCSHDRCMPLT, uintptr(unsafe.Pointer(&f)))
+func (filterdev *NetworkTap) SetHeaderComplete(f int) error {
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCSHDRCMPLT, uintptr(unsafe.Pointer(&f)))
 	if err != 0 {
 		return syscall.Errno(err)
 	}
@@ -305,9 +331,9 @@ func (l *NetworkTap) SetHeaderComplete(f int) error {
 // should be returned by BPF.  Set to zero to see only incoming packets on the
 // interface.  Set to one to see packets originating locally and remotely on the
 // interface.  This flag is initialized to one by default.
-func (l *NetworkTap) SeeSent() (int, error) {
+func (filterdev *NetworkTap) SeeSent() (int, error) {
 	var f int
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCGSEESENT, uintptr(unsafe.Pointer(&f)))
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCGSEESENT, uintptr(unsafe.Pointer(&f)))
 	if err != 0 {
 		return 0, syscall.Errno(err)
 	}
@@ -318,8 +344,8 @@ func (l *NetworkTap) SeeSent() (int, error) {
 // should be returned by BPF.  Set to zero to see only incoming packets on the
 // interface.  Set to one to see packets originating locally and remotely on the
 // interface.  This flag is initialized to one by default.
-func (l *NetworkTap) SetSeeSent(f int) error {
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(l.device.Fd()), syscall.BIOCSSEESENT, uintptr(unsafe.Pointer(&f)))
+func (filterdev *NetworkTap) SetSeeSent(f int) error {
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(filterdev.device.Fd()), syscall.BIOCSSEESENT, uintptr(unsafe.Pointer(&f)))
 	if err != 0 {
 		return syscall.Errno(err)
 	}
