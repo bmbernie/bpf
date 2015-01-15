@@ -21,6 +21,16 @@ const (
 	SizeofEtherType  = 0x02 // 2 Octets
 )
 
+type EthernetHdr struct {
+	SrcMacAddr [6]byte
+	DstMacAddr [6]byte
+	EtherType  [2]byte
+}
+
+type IPv4Header struct {
+	In [24]byte
+}
+
 // this is hacky, should probably use cgo to get this from the OS
 // portability issues ?
 type ivalue struct {
@@ -64,6 +74,16 @@ func NewNetworkTap(opts ...func(*NetworkTap) error) (*NetworkTap, error) {
 func Interface(ifname string) func(*NetworkTap) error {
 	return func(filterdev *NetworkTap) error {
 		err := filterdev.SetInterface(int(filterdev.device.Fd()), ifname)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+}
+
+func SeeSent(t int) func(*NetworkTap) error {
+	return func(filterdev *NetworkTap) error {
+		err := filterdev.SetSeeSent(t)
 		if err != nil {
 			return err
 		}
